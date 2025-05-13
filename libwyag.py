@@ -103,8 +103,11 @@ def repo_create(path):
     if os.path.exists(repo.worktree):
         if not os.path.isdir(repo.worktree):
             raise Exception (f"{path} is not a directory!")
-        if os.path.exists(repo.gitdir) and os.listdir(repo.gitdir):
-            raise Exception (f"{path} is not empty!")
+        if os.path.exists(repo.gitdir):
+            if os.path.exists(os.path.join(repo.gitdir, "config")) or os.path.exists(os.path.join(repo.gitdir, "HEAD")):
+                raise Exception (f"{path} already contains a git repository!")
+        # if os.path.exists(repo.gitdir) and os.listdir(repo.gitdir):
+        #     raise Exception (f"{path} is not empty!")
     else:
         os.makedirs(repo.worktree)
 
@@ -1299,16 +1302,37 @@ def rm(repo, paths, delete=True, skip_missing=False):
     # Find and read the index
     index = index_read(repo)
 
-    worktree = repo.worktree + os.sep
+    # worktree = repo.worktree + os.sep
+
+    # Fix for WSL: Convert Windows path to WSL path format if needed
+    worktree = repo.worktree
+    if os.name != 'nt' and ':' in worktree:  # Detecting Windows path in WSL
+        # Convert D:\path\to\repo to /mnt/d/path/to/repo
+        drive = worktree[0].lower()
+        wsl_path = f"/mnt/{drive}" + worktree[2:].replace('\\', '/')
+        worktree = wsl_path
+
 
     # Make paths absolute
     abspaths = set()
     for path in paths:
-        abspath = os.path.abspath(path)
-        if abspath.startswith(worktree):
+        abspath = os.path.realpath(os.path.abspath(path))
+        if abspath.startswith(worktree) or os.path.commonpath([abspath, worktree]) == worktree:
             abspaths.add(abspath)
         else:
+            # Allow current directory when in repo root
+            if path == '.' and os.path.realpath('.') == os.path.realpath(repo.worktree):
+                abspaths.add(abspath)
+                continue
             raise Exception(f"Cannot remove paths outside of worktree: {paths}")
+
+    # abspaths = set()
+    # for path in paths:
+    #     abspath = os.path.abspath(path)
+    #     if abspath.startswith(worktree):
+    #         abspaths.add(abspath)
+    #     else:
+    #         raise Exception(f"Cannot remove paths outside of worktree: {paths}")
 
     # The list of entries to *keep*, which we will write back to the
     # index.
@@ -1357,13 +1381,39 @@ def add(repo, paths, delete=True, skip_missing=False):
 
     # Convert the paths to pairs: (absolute, relative_to_worktree).
     # Also delete them from the index if they're present.
+
     clean_paths = set()
     for path in paths:
-        abspath = os.path.abspath(path)
+        abspath = os.path.realpath(os.path.abspath(path))
+        # Special handling for '.' when in repo root
+        if path == '.' and os.path.realpath('.') == os.path.realpath(repo.worktree):
+            for root, _, files in os.walk('.'):
+                if '.git' in root:
+                    continue
+                for file in files:
+                    filepath = os.path.join(root, file)
+                    abs_filepath = os.path.realpath(os.path.abspath(filepath))
+                    rel_filepath = os.path.relpath(abs_filepath, repo.worktree)
+                    clean_paths.add((abs_filepath, rel_filepath))
+            continue
+            
         if not (abspath.startswith(worktree) and os.path.isfile(abspath)):
             raise Exception(f"Not a file, or outside the worktree: {paths}")
         relpath = os.path.relpath(abspath, repo.worktree)
-        clean_paths.add((abspath,  relpath))
+        clean_paths.add((abspath, relpath))
+
+    # clean_paths = set()
+    # for path in paths:
+    #     abspath = os.path.abspath(path)
+    #     if not (abspath.startswith(worktree) and os.path.isfile(abspath)):
+    #         raise Exception(f"Not a file, or outside the worktree: {paths}")
+    #     relpath = os.path.relpath(abspath, repo.worktree)
+    #     clean_paths.add((abspath,  relpath))
+
+
+
+
+
 
     # Find and read the index.  It was modified by rm.  (This isn't
     # optimal, good enough for wyag!)
